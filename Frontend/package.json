@@ -10,11 +10,19 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
+    "@react-oauth/google": "^0.12.2",
+    "@tailwindcss/vite": "^4.1.17",
+    "axios": "^1.13.2",
+    "dotenv": "^17.2.3",
+    "framer-motion": "^12.23.25",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.9.6",
     "react-spinners": "^0.17.0",
+    "recharts": "^3.5.1",
     "rehype-highlight": "^7.0.2",
+    "tailwindcss": "^4.1.17",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
