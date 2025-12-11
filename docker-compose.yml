@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    container_name: pharma_backend
+    env_file:
+      - ./Backend/.env
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    networks:
+      - pharma_net
+    depends_on:
+      - mongo
+
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+    container_name: pharma_frontend
+    ports:
+      - "5173:80"   # Host:5173 → Container:nginx:80
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - pharma_net
+
+  mongo:
+    image: mongo:6.0
+    container_name: pharma_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - pharma_net
+
+volumes:
+  mongo_data:
+
+networks:
+  pharma_net:
+    driver: bridge
