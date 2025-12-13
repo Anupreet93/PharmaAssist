@@ -101,7 +101,7 @@ const HomePage = () => {
                 <span className="text-2xl font-bold text-blue-800">PharmaAssist AI</span>
                 <div className="text-xs text-gray-500 flex items-center gap-1">
                   <span>Project by</span>
-                  <span className="text-blue-600 font-semibold">Yashodeep Bandgar</span>
+                  <span className="text-blue-600 font-semibold">A.D</span>
                 </div>
               </div>
             </div>
