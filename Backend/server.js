@@ -43,12 +43,12 @@ if (process.env.NODE_ENV === "production") {
 if (process.env.NODE_ENV !== "production") {
   try {
     app.use(
-      helmet({
-        // disable policies that break Google Identity in dev
-        crossOriginOpenerPolicy: false,
-        crossOriginEmbedderPolicy: false
-      })
-    );
+  helmet({
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+    crossOriginEmbedderPolicy: false
+  })
+);
+
   } catch (e) {
     console.warn("helmet not installed or dev-helmet configuration failed — run: npm i helmet");
   }
