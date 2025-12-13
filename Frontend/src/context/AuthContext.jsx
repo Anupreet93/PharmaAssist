@@ -1,4 +1,3 @@
-// src/context/AuthContext.jsx
 import React, { createContext, useState, useEffect, useCallback } from "react";
 import api from "../lib/api";
 
@@ -13,7 +12,7 @@ export const AuthContext = createContext({
 });
 
 export function AuthProvider({ children }) {
-  // bootstrap user + token from localStorage
+  // --- bootstrap user + token from localStorage ---
   const [user, setUser] = useState(() => {
     try {
       const raw = localStorage.getItem("user");
@@ -22,40 +21,39 @@ export function AuthProvider({ children }) {
       return null;
     }
   });
+
   const [token, setToken] = useState(() => localStorage.getItem("token") || null);
   const [loading, setLoading] = useState(true);
 
-  // synchronize axios header + persist token
+  // --- sync axios header + persist token ---
   useEffect(() => {
-    if (token) {
-      api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-      try {
+    try {
+      if (token) {
+        api.defaults.headers.common.Authorization = `Bearer ${token}`;
         localStorage.setItem("token", token);
-      } catch (e) {
-        console.warn("Failed to persist token to localStorage", e);
-      }
-    } else {
-      // remove header and persisted token
-      delete api.defaults.headers.common["Authorization"];
-      try {
+      } else {
+        delete api.defaults.headers.common.Authorization;
         localStorage.removeItem("token");
-      } catch (e) {}
+      }
+    } catch (e) {
+      console.warn("Token persistence failed", e);
     }
   }, [token]);
 
-  // persist or remove user object
+  // --- persist user ---
   useEffect(() => {
     try {
       if (user) localStorage.setItem("user", JSON.stringify(user));
       else localStorage.removeItem("user");
     } catch (e) {
-      console.warn("Failed to persist user to localStorage", e);
+      console.warn("User persistence failed", e);
     }
   }, [user]);
 
-  // bootstrap validate token by calling /api/me if token exists
+  // --- bootstrap auth via /api/me ---
   useEffect(() => {
     let mounted = true;
+
     const bootstrap = async () => {
       if (!token) {
         if (mounted) setLoading(false);
@@ -66,15 +64,15 @@ export function AuthProvider({ children }) {
         const res = await api.get("/api/me");
         const data = res?.data ?? {};
         const fetchedUser = data.user ?? data.data?.user ?? data;
-        if (fetchedUser && mounted) {
+
+        if (mounted && fetchedUser) {
           setUser(fetchedUser);
         } else {
-          // invalid token / no user returned
           setToken(null);
           setUser(null);
         }
       } catch (err) {
-        console.warn("Auth bootstrap failed — clearing token:", err?.response?.data || err.message);
+        console.warn("Auth bootstrap failed:", err?.response?.data || err.message);
         setToken(null);
         setUser(null);
       } finally {
@@ -88,92 +86,113 @@ export function AuthProvider({ children }) {
     };
   }, [token]);
 
-  // login
+  // --- LOGIN ---
   const login = useCallback(async ({ email, password }) => {
     try {
-      if (!email || !password) return { ok: false, error: "Email and password required" };
+      if (!email || !password) {
+        return { ok: false, error: "Email and password are required" };
+      }
 
-      const res = await api.post("/api/auth/login", { email: (email || "").trim(), password });
+      const res = await api.post("/api/auth/login", {
+        email: email.trim(),
+        password
+      });
+
       const data = res?.data ?? {};
+      const gotToken = data.token ?? data.data?.token ?? null;
+      const gotUser = data.user ?? data.data?.user ?? null;
 
-      const gotToken = data.token ?? data?.data?.token ?? null;
-      const gotUser = data.user ?? data?.data?.user ?? data;
-
-      if (gotToken) {
-        setToken(gotToken);
-        if (gotUser && typeof gotUser === "object") setUser(gotUser);
-        return { ok: true };
+      if (!gotToken) {
+        return { ok: false, error: data.error || "Invalid login response" };
       }
 
-      if (data?.message && data?.token) {
-        setToken(data.token);
-        if (data.user) setUser(data.user);
-        return { ok: true };
-      }
+      setToken(gotToken);
+      if (gotUser) setUser(gotUser);
 
-      return { ok: false, error: data.error || "Login failed" };
+      return { ok: true };
     } catch (err) {
       const server = err?.response?.data;
+
       console.error("AuthContext.login error:", server || err.message);
+
       if (server?.errors) return { ok: false, error: server.errors };
       if (server?.error) return { ok: false, error: server.error };
+
       return { ok: false, error: err?.message || "Network error" };
     }
   }, []);
 
-  // signup
-  const signup = useCallback(async ({ name, email, password }) => {
+  // --- SIGNUP ---
+  const signup = useCallback(async ({ username, email, password }) => {
     try {
-      const res = await api.post("/api/auth/signup", { name, email: (email || "").trim(), password });
-      const data = res?.data ?? {};
-      const gotToken = data.token ?? data?.data?.token ?? null;
-      const gotUser = data.user ?? data?.data?.user ?? data;
-
-      if (gotToken) {
-        setToken(gotToken);
-        if (gotUser && typeof gotUser === "object") setUser(gotUser);
-        return { ok: true };
+      if (!username || !email || !password) {
+        return { ok: false, error: "Username, email and password are required" };
       }
 
-      return { ok: false, error: data.error || "Signup failed" };
+      const res = await api.post("/api/auth/signup", {
+        username: username.trim(),
+        email: email.trim(),
+        password
+      });
+
+      const data = res?.data ?? {};
+      const gotToken = data.token ?? data.data?.token ?? null;
+      const gotUser = data.user ?? data.data?.user ?? null;
+
+      if (!gotToken) {
+        return { ok: false, error: data.error || "Signup failed" };
+      }
+
+      setToken(gotToken);
+      if (gotUser) setUser(gotUser);
+
+      return { ok: true };
     } catch (err) {
       const server = err?.response?.data;
+
       console.error("AuthContext.signup error:", server || err.message);
-      return { ok: false, error: server?.error || err?.message || "Network error" };
+
+      if (server?.errors) return { ok: false, error: server.errors };
+      if (server?.error) return { ok: false, error: server.error };
+
+      return { ok: false, error: err?.message || "Network error" };
     }
   }, []);
 
-  // logout: clear local state + localStorage + axios header; optionally notify backend
+  // --- LOGOUT ---
   const logout = useCallback(async () => {
-    // clear state first
     setUser(null);
     setToken(null);
 
-    // explicitly clear persisted storage and axios header to be safe
     try {
       localStorage.removeItem("token");
       localStorage.removeItem("user");
-    } catch (e) {}
+      delete api.defaults.headers.common.Authorization;
+    } catch {}
 
-    try {
-      delete api.defaults.headers.common["Authorization"];
-    } catch (e) {}
-
-    // try to notify backend (best-effort)
     try {
       await api.post("/api/auth/logout");
-    } catch (e) {
-      // ignore network errors for logout
+    } catch {
+      // best-effort
     }
   }, []);
 
-  // signOut alias
   const signOut = useCallback(async () => {
     await logout();
   }, [logout]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, signup, logout, signOut }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        loading,
+        login,
+        signup,
+        logout,
+        signOut
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
