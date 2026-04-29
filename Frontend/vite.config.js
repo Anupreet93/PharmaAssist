@@ -1,9 +1,10 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
-// https://vite.dev/config/
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+<<<<<<< HEAD
   base: "/",
 
   server: {
@@ -16,3 +17,16 @@ export default defineConfig({
     },
   },
 });
+=======
+  base: "/",   // for Vercel
+
+  server: {
+    host: true,          // 🔥 allows external access
+    port: 5173,
+    allowedHosts: "all", // 🔥 allow loca.lt / ngrok domains
+  },
+  headers: {
+      "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+    },
+});
+>>>>>>> def0ffa (Updated Vite Config)
