@@ -1,6 +1,9 @@
 // models/Thread.js
 import mongoose from "mongoose";
 
+/* -------------------------------------------------
+   Message schema (ChatGPT-style messages)
+------------------------------------------------- */
 const MessageSchema = new mongoose.Schema(
   {
     role: {
@@ -20,17 +23,38 @@ const MessageSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/* -------------------------------------------------
+   Search metadata (structured history)
+------------------------------------------------- */
 const SearchMetaSchema = new mongoose.Schema(
   {
-    query: { type: String, required: true },
-    params: { type: Object, default: {} }, // e.g. filters, page, etc.
-    resultsSummary: { type: String, default: null }, // optional short summary
-    resultsCount: { type: Number, default: null },
-    timestamp: { type: Date, default: Date.now }
+    query: {
+      type: String,
+      required: true
+    },
+    params: {
+      type: Object,
+      default: {} // filters, pagination, etc.
+    },
+    resultsSummary: {
+      type: String,
+      default: null
+    },
+    resultsCount: {
+      type: Number,
+      default: null
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now
+    }
   },
   { _id: false }
 );
 
+/* -------------------------------------------------
+   Thread schema
+------------------------------------------------- */
 const ThreadSchema = new mongoose.Schema(
   {
     threadId: {
@@ -43,7 +67,6 @@ const ThreadSchema = new mongoose.Schema(
     owner: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: false,
       index: true,
       default: null
     },
@@ -52,12 +75,13 @@ const ThreadSchema = new mongoose.Schema(
       type: String,
       default: "New Chat"
     },
+
     messages: {
       type: [MessageSchema],
       default: []
     },
 
-    // NEW: keep historical search metadata for this thread
+    // Stores structured search history (medicine, generics, etc.)
     searches: {
       type: [SearchMetaSchema],
       default: []
@@ -68,7 +92,9 @@ const ThreadSchema = new mongoose.Schema(
   }
 );
 
-// compound index to speed lookups by owner + threadId
+/* -------------------------------------------------
+   Indexes for performance
+------------------------------------------------- */
 ThreadSchema.index({ owner: 1, threadId: 1 }, { unique: true, sparse: true });
 ThreadSchema.index({ owner: 1, updatedAt: -1 });
 

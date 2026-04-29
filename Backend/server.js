@@ -7,11 +7,10 @@ import crypto from "crypto";
 import path from "path";
 import cookieParser from "cookie-parser";
 
-// optional security middlewares
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 
-// route imports
+// routes
 import chatRoutes from "./routes/chat.js";
 import medicineRoutes from "./routes/medicine.js";
 import authRoutes from "./routes/auth.js";
@@ -25,18 +24,14 @@ const PORT = process.env.PORT || 8080;
 
 app.set("trust proxy", 1);
 
-// --- ENV sanity checks ---
-if (process.env.NODE_ENV === "production") {
-  if (!process.env.JWT_SECRET) {
-    console.error("FATAL: JWT_SECRET not set in production.");
-    process.exit(1);
-  }
-} else {
-  if (!process.env.JWT_SECRET) {
-    console.warn("Warning: JWT_SECRET missing — set it in .env");
-  }
+/* =====================================================
+   ENV CHECK
+===================================================== */
+if (!process.env.JWT_SECRET) {
+  console.warn("⚠️ JWT_SECRET is missing");
 }
 
+<<<<<<< HEAD
 // --- security middlewares ---
 // In development we relax COOP/COEP so embedded Google Identity iframe / postMessage works.
 // In production we apply helmet normally (you can tune the options as needed).
@@ -59,163 +54,207 @@ if (process.env.NODE_ENV !== "production") {
     console.warn("helmet not installed — run: npm i helmet");
   }
 }
+=======
+/* =====================================================
+   HELMET (GOOGLE OAUTH SAFE)
+===================================================== */
+app.use(
+  helmet({
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+    crossOriginEmbedderPolicy: false,
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        "script-src": ["'self'", "https://accounts.google.com"],
+        "frame-src": ["'self'", "https://accounts.google.com"],
+        "connect-src": [
+          "'self'",
+          "https://accounts.google.com",
+          "https://oauth2.googleapis.com"
+        ]
+      }
+    }
+  })
+);
+>>>>>>> 93868d0 (Updated Backend)
 
-try {
-  const limiter = rateLimit({
+/* =====================================================
+   RATE LIMIT
+===================================================== */
+app.use(
+  rateLimit({
     windowMs: 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_MAX || "120", 10),
     standardHeaders: true,
     legacyHeaders: false
-  });
-  app.use(limiter);
-} catch (e) {
-  console.warn("express-rate-limit missing — run: npm i express-rate-limit");
-}
+  })
+);
 
-// --- JSON parsing ---
+/* =====================================================
+   BODY PARSERS
+===================================================== */
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
-// --- CORS ---
-const allowedOriginsEnv = process.env.ALLOWED_ORIGINS || "";
-const allowedOrigins = allowedOriginsEnv.split(",").map(s => s.trim()).filter(Boolean);
+/* =====================================================
+   CORS CONFIG (SAFE)
+===================================================== */
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map(o => o.trim().replace(/\/+$/, "").toLowerCase())
+  .filter(Boolean);
+
+console.log("🌐 CORS allowedOrigins:", allowedOrigins);
+
+function normalizeOrigin(origin) {
+  try {
+    const u = new URL(origin);
+    return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ""}`.toLowerCase();
+  } catch {
+    return origin.toLowerCase();
+  }
+}
 
 function corsOriginCallback(origin, callback) {
-  // allow non-browser clients (curl/postman) which don't send origin
   if (!origin) return callback(null, true);
 
-  // in dev, allow all if not explicitly configured
-  if (process.env.NODE_ENV !== "production" && allowedOrigins.length === 0) {
+  const normalized = normalizeOrigin(origin);
+
+  if (allowedOrigins.length === 0 || allowedOrigins.includes(normalized)) {
     return callback(null, true);
   }
 
-  if (allowedOrigins.length > 0) {
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error("CORS policy: Origin not allowed"), false);
-  }
-
-  return callback(null, true);
+  return callback(new Error("CORS policy: Origin not allowed"), false);
 }
 
-app.use(cors({
+app.use(
+  cors({
+    origin: corsOriginCallback,
+    credentials: true
+  })
+);
+
+// ✅ Express 5 compatible preflight
+app.options("/*", cors({
   origin: corsOriginCallback,
   credentials: true
 }));
 
-app.use(cookieParser());
-
-// --- Request ID middleware ---
+/* =====================================================
+   REQUEST ID + LOGGER
+===================================================== */
 app.use((req, res, next) => {
   req.id = crypto.randomBytes(6).toString("hex");
   res.setHeader("X-Request-Id", req.id);
   next();
 });
 
-// TEMPORARY DEBUG LOGGER
 app.use((req, res, next) => {
-  const origin = req.headers.origin || req.headers.referer || "";
-  console.log(`[REQ ${new Date().toISOString()}] id=${req.id} method=${req.method} path=${req.path} origin=${origin} auth=${!!req.headers.authorization}`);
+  console.log(
+    `[REQ ${new Date().toISOString()}] id=${req.id} ${req.method} ${req.originalUrl}`
+  );
   next();
 });
 
-// --- Health check ---
+/* =====================================================
+   HEALTH CHECK
+===================================================== */
 app.get("/", (req, res) => {
-  res.status(200).json({
+  res.json({
     status: "ok",
+    env: process.env.NODE_ENV || "development",
     time: new Date().toISOString(),
-    requestId: req.id,
-    env: process.env.NODE_ENV || "development"
+    requestId: req.id
   });
 });
 
-// --- ROUTES ---
-// Public: authentication
+/* =====================================================
+   ROUTES
+===================================================== */
 app.use("/api/auth", authRoutes);
-
-// Chat and medicine routers are expected to define their own paths
 app.use("/api", chatRoutes);
 app.use("/api/medicine", medicineRoutes);
 
-// Example protected route
 app.get("/api/me", authMiddleware, (req, res) => {
   res.json({ ok: true, user: req.user });
 });
 
-/**
- * UNMATCHED API HANDLER
- * ---------------------
- * If request path starts with /api but no route matched, return a clear 404 JSON.
- */
+/* =====================================================
+   API 404 HANDLER
+===================================================== */
 app.use((req, res, next) => {
   if (req.path.startsWith("/api")) {
-    console.warn(`[NOT FOUND] id=${req.id} ${req.method} ${req.originalUrl} — no API route matched`);
     return res.status(404).json({
       ok: false,
       error: "API route not found",
       path: req.originalUrl
     });
   }
-  return next();
+  next();
 });
 
-// --- Serve frontend build (optional) ---
+/* =====================================================
+   SERVE FRONTEND (EXPRESS 5 SAFE)
+===================================================== */
 if (process.env.CLIENT_BUILD_PATH) {
   const clientPath = path.resolve(process.env.CLIENT_BUILD_PATH);
   app.use(express.static(clientPath));
 
-  app.get("*", (req, res, next) => {
-    if (req.path.startsWith("/api")) return next();
+  // ❗ MUST be /* (NOT *)
+  app.get("/*", (req, res) => {
+    if (req.path.startsWith("/api")) return;
     res.sendFile(path.join(clientPath, "index.html"));
   });
 }
 
-// --- Error handler ---
+/* =====================================================
+   ERROR HANDLER
+===================================================== */
 app.use((err, req, res, next) => {
-  if (err && err.message?.includes("CORS")) {
+  if (err?.message?.includes("CORS")) {
     return res.status(403).json({ error: err.message });
   }
+
+  console.error("❌ Server error:", err);
+
   if (typeof errorHandler === "function") {
     return errorHandler(err, req, res, next);
   }
 
-  console.error("Unhandled server error:", err);
   res.status(500).json({ error: "Internal server error" });
 });
 
-// --- Start server after DB connects ---
+/* =====================================================
+   START SERVER
+===================================================== */
 const startServer = async () => {
   try {
     const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
-    if (!mongoUri) {
-      console.error("Error: MONGODB_URI missing from .env");
-      process.exit(1);
-    }
+    if (!mongoUri) throw new Error("MONGODB_URI missing");
 
     await mongoose.connect(mongoUri, {
-      dbName: process.env.MONGODB_DBNAME || undefined,
+      dbName: process.env.MONGODB_DBNAME,
       autoIndex: true,
       maxPoolSize: 10,
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000
+      serverSelectionTimeoutMS: 5000
     });
 
     console.log("✅ MongoDB connected");
 
     const server = app.listen(PORT, () =>
-      console.log(`🚀 Server running at http://localhost:${PORT}`)
+      console.log(`🚀 Server running on port ${PORT}`)
     );
 
-    const gracefulShutdown = async (signal) => {
-      console.log(`\nReceived ${signal}, shutting down...`);
-      server.close(() => console.log("HTTP server closed"));
+    const shutdown = async signal => {
+      console.log(`\n${signal} received. Shutting down...`);
+      server.close();
       await mongoose.disconnect();
-      console.log("MongoDB disconnected");
       process.exit(0);
     };
 
-    process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-    process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
   } catch (err) {
     console.error("Failed to start server:", err);
     process.exit(1);
@@ -224,8 +263,13 @@ const startServer = async () => {
 
 startServer();
 
-// --- Global error handlers ---
-process.on("unhandledRejection", reason => console.error("Unhandled Rejection:", reason));
+/* =====================================================
+   GLOBAL GUARDS
+===================================================== */
+process.on("unhandledRejection", reason =>
+  console.error("Unhandled Rejection:", reason)
+);
+
 process.on("uncaughtException", err => {
   console.error("Uncaught Exception:", err);
   process.exit(1);

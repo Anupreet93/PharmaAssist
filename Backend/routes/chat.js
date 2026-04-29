@@ -1,47 +1,44 @@
 // routes/chat.js
 console.log("[routes/chat] loaded");
+console.log("OPENAI FILE PATH:", new URL("../utils/openai.js", import.meta.url).pathname);
 
 import express from "express";
 import Thread from "../models/Thread.js";
 import authMiddleware from "../middleware/auth.js";
 import {
   classifyMedicineQuery,
-  getMedicineDetails
+  getMedicineDetails,
+  getMedicinePricingAndGenerics
 } from "../utils/openai.js";
 import crypto from "crypto";
 
 const router = express.Router();
 
-// Protect everything in this router
+// Protect everything
 router.use(authMiddleware);
 
-// ---------- helpers ----------
+/* -------------------- helpers -------------------- */
 const hasValidIncomingId = (id) => {
-  if (!id) return false;
-  if (typeof id !== "string") return false;
-  const trimmed = id.trim();
-  if (!trimmed) return false;
-  if (trimmed === "undefined" || trimmed === "null") return false;
+  if (!id || typeof id !== "string") return false;
+  const t = id.trim();
+  if (!t || t === "undefined" || t === "null") return false;
   return true;
 };
 
 const makeId = (bytes = 6) => crypto.randomBytes(bytes).toString("hex");
 
-// lightweight sanitize fallback (optional)
 function simpleSanitize(input) {
-  if (input == null) return "";
-  const s = String(input);
-  const withoutTags = s.replace(/<\/?[^>]+(>|$)/g, "");
-  return withoutTags.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  if (!input) return "";
+  return String(input).replace(/<\/?[^>]+(>|$)/g, "");
 }
 
-// ---------- list / single thread endpoints (unchanged) ----------
+/* -------------------- threads -------------------- */
 router.get("/thread", async (req, res) => {
   try {
     const ownerId = req.user.id;
     const threads = await Thread.find({ owner: ownerId })
       .sort({ updatedAt: -1 })
-      .select("threadId title createdAt updatedAt messages")
+      .select("threadId title messages createdAt updatedAt")
       .lean();
 
     return res.json({ ok: true, threads });
@@ -52,10 +49,10 @@ router.get("/thread", async (req, res) => {
 });
 
 router.get("/thread/:threadId", async (req, res) => {
-  const { threadId } = req.params;
-  const ownerId = req.user.id;
-
   try {
+    const { threadId } = req.params;
+    const ownerId = req.user.id;
+
     const thread = await Thread.findOne({ threadId, owner: ownerId }).lean();
     if (!thread) return res.status(404).json({ error: "Thread not found" });
 
@@ -66,178 +63,124 @@ router.get("/thread/:threadId", async (req, res) => {
   }
 });
 
-router.delete("/thread/:threadId", async (req, res) => {
-  const { threadId } = req.params;
-  const ownerId = req.user.id;
-
-  try {
-    const deleted = await Thread.findOneAndDelete({ threadId, owner: ownerId });
-    if (!deleted) return res.status(404).json({ error: "Thread not found or not owned by you" });
-
-    return res.json({ ok: true, message: "Thread deleted successfully" });
-  } catch (err) {
-    console.error("DELETE /thread/:threadId error:", err);
-    return res.status(500).json({ error: "Failed to delete thread" });
-  }
-});
-
-router.post("/thread", async (req, res) => {
-  try {
-    const owner = req.user.id;
-    const { title, messages } = req.body;
-    const threadId = `t-${makeId(8)}`;
-
-    const thread = new Thread({
-      threadId,
-      owner,
-      title: title || "New Chat",
-      messages: Array.isArray(messages) ? messages : []
-    });
-
-    await thread.save();
-    return res.status(201).json({ ok: true, thread });
-  } catch (err) {
-    console.error("POST /thread error:", err);
-    if (err.code === 11000) return res.status(409).json({ error: "Thread id collision" });
-    return res.status(500).json({ error: "Failed to create thread" });
-  }
-});
-
-router.post("/thread/:threadId/messages", async (req, res) => {
-  const { threadId } = req.params;
-  const { role, content } = req.body;
-  const ownerId = req.user.id;
-
-  if (!role || !content) return res.status(400).json({ error: "role and content required" });
-  if (!["user", "assistant"].includes(role)) return res.status(400).json({ error: "invalid role" });
-
-  try {
-    const update = {
-      $push: { messages: { role, content, timestamp: new Date() } },
-      $set: { updatedAt: new Date() }
-    };
-
-    const thread = await Thread.findOneAndUpdate({ threadId, owner: ownerId }, update, { new: true });
-    if (!thread) return res.status(404).json({ error: "Thread not found or not owned by user" });
-
-    return res.json({ ok: true, thread });
-  } catch (err) {
-    console.error("POST /thread/:threadId/messages error:", err);
-    return res.status(500).json({ error: "Failed to append message" });
-  }
-});
-
-// ---------- chat endpoint (main assistant flow) ----------
+/* -------------------- MAIN CHAT -------------------- */
 router.post("/chat", async (req, res) => {
   const { threadId: incomingThreadIdRaw, message } = req.body;
   const ownerId = req.user.id;
 
   if (!message || typeof message !== "string" || !message.trim()) {
-    return res.status(400).json({ error: "missing required field: message" });
+    return res.status(400).json({ error: "message is required" });
   }
 
   try {
-    const incomingThreadId = hasValidIncomingId(incomingThreadIdRaw) ? incomingThreadIdRaw.trim() : null;
+    const incomingThreadId = hasValidIncomingId(incomingThreadIdRaw)
+      ? incomingThreadIdRaw.trim()
+      : null;
 
-    console.log(`[CHAT] owner=${ownerId} incomingThreadId=${incomingThreadId}`);
+    let thread;
 
-    // Determine thread to use/create
-    let thread = null;
-
+    // Thread resolution
     if (incomingThreadId) {
-      // try to find a thread owned by this user with that id
       thread = await Thread.findOne({ threadId: incomingThreadId, owner: ownerId });
 
       if (!thread) {
-        // not owned by this user. Check if thread exists but owner is null (orphan).
-        const maybeOrphan = await Thread.findOne({ threadId: incomingThreadId }).exec();
-        if (maybeOrphan && (maybeOrphan.owner === null || maybeOrphan.owner === undefined)) {
-          // Claim orphan for this user
-          maybeOrphan.owner = ownerId;
-          // optionally sanitize the title
-          if (maybeOrphan.title) maybeOrphan.title = simpleSanitize(maybeOrphan.title);
-          await maybeOrphan.save();
-          thread = maybeOrphan;
-          console.log(`[CHAT] claimed orphan thread ${incomingThreadId} for user ${ownerId}`);
+        const orphan = await Thread.findOne({ threadId: incomingThreadId });
+        if (orphan && orphan.owner == null) {
+          orphan.owner = ownerId;
+          orphan.title = simpleSanitize(orphan.title);
+          await orphan.save();
+          thread = orphan;
         } else {
-          // either doesn't exist or owned by someone else -> create a new thread for this user
-          const newThreadId = `t-${makeId(10)}`;
           thread = new Thread({
-            threadId: newThreadId,
+            threadId: `t-${makeId(10)}`,
             owner: ownerId,
             title: message,
             messages: []
           });
-          console.log(`[CHAT] created new thread ${newThreadId} because incoming id wasn't available to user ${ownerId}`);
         }
       }
     } else {
-      // No threadId supplied -> create a brand new thread owned by the user
-      const newThreadId = `t-${makeId(10)}`;
       thread = new Thread({
-        threadId: newThreadId,
+        threadId: `t-${makeId(10)}`,
         owner: ownerId,
         title: message,
         messages: []
       });
     }
 
-    // Append user's message
-    thread.messages.push({ role: "user", content: message, timestamp: new Date() });
+    // Save user message
+    thread.messages.push({
+      role: "user",
+      content: message,
+      timestamp: new Date()
+    });
 
-    // 1) classify
+    /* --------- 1️⃣ CLASSIFY --------- */
     const classifier = await classifyMedicineQuery(message);
 
-    if (!classifier || !classifier.is_medicine || (typeof classifier.confidence === "number" && classifier.confidence < 0.6)) {
-      const reply = "This medicine is not present in DB.";
+    if (!classifier?.is_medicine || classifier.confidence < 0.6) {
+      const reply = "This medicine is not present in the database.";
 
-      thread.messages.push({ role: "assistant", content: reply, timestamp: new Date() });
-      thread.updatedAt = new Date();
+      thread.messages.push({
+        role: "assistant",
+        content: reply,
+        timestamp: new Date()
+      });
+
       await thread.save();
 
-      // return threadId so frontend can persist it (and show in sidebar)
-      return res.status(200).json({
+      return res.json({
         present: false,
         reply,
         threadId: thread.threadId
       });
     }
 
-    // 2) get details
-    const normalizedName = classifier.normalized_name ?? classifier.name ?? null;
-    const details = normalizedName ? await getMedicineDetails(normalizedName) : null;
+    const normalizedName = classifier.normalized_name || message;
 
-    if (!details) {
-      const reply = "Medicine recognized but details could not be loaded.";
+    /* --------- 2️⃣ FETCH DETAILS + GENERICS --------- */
+    const medicineDetails = await getMedicineDetails(normalizedName);
+    const pricingAndGenerics = await getMedicinePricingAndGenerics(normalizedName);
 
-      thread.messages.push({ role: "assistant", content: reply, timestamp: new Date() });
-      thread.updatedAt = new Date();
-      await thread.save();
+     console.log("\n================ MEDICINE SEARCH =================");
+console.log("👤 User ID       :", ownerId);
+console.log("💊 Medicine Name :", normalizedName);
+console.log("🕒 Time          :", new Date().toLocaleString());
 
-      return res.status(200).json({
-        present: true,
-        reply,
-        threadId: thread.threadId
-      });
-    }
+console.log("\n📘 MEDICINE DETAILS");
+console.log(JSON.stringify(medicineDetails, null, 2));
 
-    // 3) assistant message
-    const assistantReply = typeof details === "string" ? details : JSON.stringify(details, null, 2);
+console.log("\n💰 PRICING & GENERICS");
+console.log(JSON.stringify(pricingAndGenerics, null, 2));
 
-    thread.messages.push({ role: "assistant", content: assistantReply, timestamp: new Date() });
+console.log("=================================================\n");
+    const combinedResponse = {
+      medicine_details: medicineDetails,
+      pricing_and_generics: pricingAndGenerics
+  
+    };
+   
+    /* --------- 3️⃣ SAVE ASSISTANT MESSAGE --------- */
+    thread.messages.push({
+      role: "assistant",
+      content: JSON.stringify(combinedResponse, null, 2),
+      timestamp: new Date()
+    });
+
     thread.updatedAt = new Date();
     await thread.save();
 
-    // Return threadId so frontend can keep showing this chat under user's history
+    /* --------- 4️⃣ SEND RESPONSE --------- */
     return res.status(200).json({
       present: true,
-      details,
-      reply: assistantReply,
+      details: combinedResponse,
+      reply: combinedResponse,
       threadId: thread.threadId
     });
+
   } catch (err) {
-    console.error("Unexpected error in /chat:", err);
-    return res.status(500).json({ error: "something went wrong" });
+    console.error("POST /chat error:", err);
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
