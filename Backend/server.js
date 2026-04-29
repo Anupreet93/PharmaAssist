@@ -28,55 +28,35 @@ app.set("trust proxy", 1);
    ENV CHECK
 ===================================================== */
 if (!process.env.JWT_SECRET) {
-  console.warn("⚠️ JWT_SECRET is missing");
+  console.warn("⚠️  JWT_SECRET is missing");
 }
 
-<<<<<<< HEAD
-// --- security middlewares ---
-// In development we relax COOP/COEP so embedded Google Identity iframe / postMessage works.
-// In production we apply helmet normally (you can tune the options as needed).
-if (process.env.NODE_ENV !== "production") {
-  try {
-    app.use(
-  helmet({
-    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
-    crossOriginEmbedderPolicy: false
-  })
-);
-
-  } catch (e) {
-    console.warn("helmet not installed or dev-helmet configuration failed — run: npm i helmet");
-  }
-} else {
-  try {
-    app.use(helmet());
-  } catch (e) {
-    console.warn("helmet not installed — run: npm i helmet");
-  }
-}
-=======
 /* =====================================================
    HELMET (GOOGLE OAUTH SAFE)
 ===================================================== */
-app.use(
-  helmet({
-    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
-    crossOriginEmbedderPolicy: false,
-    contentSecurityPolicy: {
-      useDefaults: true,
-      directives: {
-        "script-src": ["'self'", "https://accounts.google.com"],
-        "frame-src": ["'self'", "https://accounts.google.com"],
-        "connect-src": [
-          "'self'",
-          "https://accounts.google.com",
-          "https://oauth2.googleapis.com"
-        ]
-      }
+const helmetOptions = {
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      "script-src": ["'self'", "https://accounts.google.com"],
+      "frame-src":  ["'self'", "https://accounts.google.com"],
+      "connect-src": [
+        "'self'",
+        "https://accounts.google.com",
+        "https://oauth2.googleapis.com"
+      ]
     }
-  })
-);
->>>>>>> 93868d0 (Updated Backend)
+  }
+};
+
+// In development, relax CSP so hot-reload / devtools work without friction
+if (process.env.NODE_ENV !== "production") {
+  helmetOptions.contentSecurityPolicy = false;
+}
+
+app.use(helmet(helmetOptions));
 
 /* =====================================================
    RATE LIMIT
@@ -105,7 +85,7 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .map(o => o.trim().replace(/\/+$/, "").toLowerCase())
   .filter(Boolean);
 
-console.log("🌐 CORS allowedOrigins:", allowedOrigins);
+console.log("🌐 CORS allowedOrigins:", allowedOrigins.length ? allowedOrigins : "(all — set ALLOWED_ORIGINS in production)");
 
 function normalizeOrigin(origin) {
   try {
@@ -117,40 +97,46 @@ function normalizeOrigin(origin) {
 }
 
 function corsOriginCallback(origin, callback) {
+  // Allow non-browser / same-origin requests (no Origin header)
   if (!origin) return callback(null, true);
 
   const normalized = normalizeOrigin(origin);
 
-  if (allowedOrigins.length === 0 || allowedOrigins.includes(normalized)) {
+  // If no allowlist is configured, allow all (dev only — always set ALLOWED_ORIGINS in prod)
+  if (allowedOrigins.length === 0) {
+    if (process.env.NODE_ENV === "production") {
+      console.warn("⚠️  ALLOWED_ORIGINS is not set — all origins are allowed in production!");
+    }
     return callback(null, true);
   }
 
-  return callback(new Error("CORS policy: Origin not allowed"), false);
+  if (allowedOrigins.includes(normalized)) {
+    return callback(null, true);
+  }
+
+  return callback(new Error(`CORS policy: Origin not allowed — ${normalized}`), false);
 }
 
-app.use(
-  cors({
-    origin: corsOriginCallback,
-    credentials: true
-  })
-);
-
-// ✅ Express 5 compatible preflight
-app.options("/*", cors({
+const corsConfig = {
   origin: corsOriginCallback,
   credentials: true
-}));
+};
+
+app.use(cors(corsConfig));
+
+// Express 5 compatible preflight handler
+app.options("/{*splat}", cors(corsConfig));
 
 /* =====================================================
    REQUEST ID + LOGGER
 ===================================================== */
-app.use((req, res, next) => {
+app.use((req, _res, next) => {
   req.id = crypto.randomBytes(6).toString("hex");
-  res.setHeader("X-Request-Id", req.id);
+  _res.setHeader("X-Request-Id", req.id);
   next();
 });
 
-app.use((req, res, next) => {
+app.use((req, _res, next) => {
   console.log(
     `[REQ ${new Date().toISOString()}] id=${req.id} ${req.method} ${req.originalUrl}`
   );
@@ -201,8 +187,8 @@ if (process.env.CLIENT_BUILD_PATH) {
   const clientPath = path.resolve(process.env.CLIENT_BUILD_PATH);
   app.use(express.static(clientPath));
 
-  // ❗ MUST be /* (NOT *)
-  app.get("/*", (req, res) => {
+  // Express 5: use /{*splat} instead of /* for wildcard routes
+  app.get("/{*splat}", (req, res) => {
     if (req.path.startsWith("/api")) return;
     res.sendFile(path.join(clientPath, "index.html"));
   });
@@ -213,16 +199,13 @@ if (process.env.CLIENT_BUILD_PATH) {
 ===================================================== */
 app.use((err, req, res, next) => {
   if (err?.message?.includes("CORS")) {
-    return res.status(403).json({ error: err.message });
+    return res.status(403).json({ ok: false, error: err.message });
   }
 
-  console.error("❌ Server error:", err);
+  console.error(`❌ Server error [id=${req.id}]:`, err);
 
-  if (typeof errorHandler === "function") {
-    return errorHandler(err, req, res, next);
-  }
-
-  res.status(500).json({ error: "Internal server error" });
+  // Delegate to your custom error handler
+  return errorHandler(err, req, res, next);
 });
 
 /* =====================================================
@@ -231,7 +214,7 @@ app.use((err, req, res, next) => {
 const startServer = async () => {
   try {
     const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
-    if (!mongoUri) throw new Error("MONGODB_URI missing");
+    if (!mongoUri) throw new Error("MONGODB_URI is missing from environment");
 
     await mongoose.connect(mongoUri, {
       dbName: process.env.MONGODB_DBNAME,
@@ -247,16 +230,17 @@ const startServer = async () => {
     );
 
     const shutdown = async signal => {
-      console.log(`\n${signal} received. Shutting down...`);
+      console.log(`\n${signal} received — shutting down gracefully...`);
       server.close();
       await mongoose.disconnect();
       process.exit(0);
     };
 
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+    process.on("SIGINT",  () => shutdown("SIGINT"));
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+
   } catch (err) {
-    console.error("Failed to start server:", err);
+    console.error("❌ Failed to start server:", err);
     process.exit(1);
   }
 };
